@@ -203,9 +203,9 @@ draw <- function(shp, init_plan, ndists, palette,
           bslib::accordion(
             bslib::accordion_panel(
               'Edit districts',
+              shiny::tags$style(lock_css),
               DT::DTOutput(outputId = 'district', fill = TRUE),
-              icon = shiny::icon('paintbrush')#,
-              #style = 'min-height: 60vh'
+              icon = shiny::icon('paintbrush')
             ),
             bslib::accordion_panel(
               'Fill',
@@ -258,30 +258,6 @@ draw <- function(shp, init_plan, ndists, palette,
                 shiny::textInput('save_shp_path', label = 'Path to save shapefile',
                                  value = opts$save_shape_path %||% def_opts$save_shape_path),
                 shiny::downloadButton('save_shp', label = 'Export shapefile')
-              ),
-              bslib::nav_panel(
-                'Lock',
-                shiny::tags$style(lock_css),
-                if (!rlang::is_installed('shinyWidgets')) {
-                  shiny::checkboxGroupInput(
-                    inputId = 'locks',
-                    choices = seq_len(ndists),
-                    label = 'Lock districts',
-                    selected = opts$locked_districts %||% def_opts$locked_districts
-                  )
-                } else {
-                  shinyWidgets::checkboxGroupButtons(
-                    inputId = "locks",
-                    label = "Lock districts",
-                    choices = seq_len(ndists),
-                    status = "lockClass",
-                    checkIcon = list(
-                      yes = shiny::icon("lock"),
-                      no = shiny::icon("lock-open")
-                    ),
-                    direction = 'vertical'
-                  )
-                }
               ),
               bslib::nav_panel(
                 'District colors',
@@ -420,6 +396,30 @@ draw <- function(shp, init_plan, ndists, palette,
     palette_reactive <- shiny::reactiveVal(palette)
 
     tab_pop_static <- dplyr::tibble(
+      if (rlang::is_installed('shinyWidgets')) {
+        locks = vapply(seq_len(ndists + 1L) - 1L, function(i) {
+            shinyWidgets::prettyToggle(
+              inputId = paste0('unlocked_', i),
+              label_on = NULL,
+              label_off = NULL,
+              outline = TRUE,
+              plain = TRUE,
+              value = TRUE,
+              icon_on = shiny::icon("lock-open"),
+              icon_off = shiny::icon("lock")
+            ) |>
+            as.character()
+        }, FUN.VALUE = character(1L))
+      } else {
+      locks = vapply(seq_len(ndists + 1L) - 1L, function(i) {
+        shiny::checkboxInput(
+          inputId = paste0('lock_', i),
+          value = i %in% opts$locked_districts %||% def_opts$locked_districts,
+          label = NULL
+        ) |>
+          as.character()
+      }, FUN.VALUE = character(1L))
+      },
       District = paste0(
         "<p style='background-color:",
         palette[c(NA_integer_, seq_len(ndists))],
@@ -496,8 +496,8 @@ draw <- function(shp, init_plan, ndists, palette,
         }
 
         idx <- which(shp$redistio_id == click$id)
-        new_dist <- ifelse(input$district_rows_selected == 1, NA_integer_, input$district_rows_selected - 1L)
-        if (redistio_curr_plan$pl[idx] %in% input$locks || new_dist %in% input$locks) {
+        new_dist <- ifelse(input$district_cells_selected[1] == 1, NA_integer_, input$district_cells_selected[1] - 1L)
+        if (!input[[paste0('unlocked_', redistio_curr_plan$pl[idx])]] || !input[[paste0('unlocked_', new_dist)]]) {
           return(NULL)
         }
 
@@ -516,21 +516,35 @@ draw <- function(shp, init_plan, ndists, palette,
     )
 
     # district stats ----
+    shiny::addResourcePath('shinyWidgets', system.file("assets", package = "shinyWidgets"))
     output$district <- DT::renderDT({
-        shiny::isolate(val()) |>
+        tab <- shiny::isolate(val()) |>
           DT::datatable(
             options = list(
               dom = 't', ordering = FALSE, scrollY = paste0(min(ndists * 10, 90), 'vh'), #scrollX = TRUE, #, # TODO make changeable
-              pageLength = ndists + 1L
+              pageLength = ndists + 1L,
+              columnDefs = list(
+                list(targets = 0, visible = FALSE)
+              )
             ),
+            callback = DT::JS("table.rows().every(function(i, tab, row) {
+          var $this = $(this.node());
+          $this.attr('id', this.data()[0]);
+          $this.addClass('shiny-input-checkbox');
+        });
+        Shiny.unbindAll(table.table().node());
+        Shiny.bindAll(table.table().node());"),
             style = 'bootstrap',
-            rownames = FALSE,
+            rownames = TRUE,
             escape = FALSE,
-            selection = list(target = 'row', mode = 'single', selected = 2),
+            selection = list(target = 'cell', mode = 'single', selected = matrix(c(2, 2), ncol = 2),
+                             selectable = matrix(c(seq_len(ndists + 1), rep(2, ndists + 1)), ncol = 2)),
             fillContainer = TRUE,
-            colnames = c('District', 'Pop.', 'Dev.')
+            colnames = c('', 'District', 'Pop.', 'Dev.')
           ) |>
           DT::formatRound(columns = c('Population', 'Deviation'), digits = 0)
+        tab$dependencies <- c(tab$dependencies, lock_html())
+        tab
       },
       server = TRUE
     )
@@ -539,10 +553,12 @@ draw <- function(shp, init_plan, ndists, palette,
 
     shiny::observe({
       DT::replaceData(
-        proxy = dt_proxy, val(), rownames = FALSE,
+        proxy = dt_proxy, val(), rownames = TRUE,
         resetPaging = FALSE, clearSelection = 'none'
       )
     })
+    print(input)
+    print(output)
 
     shiny::outputOptions(output, 'district', suspendWhenHidden = FALSE)
 
